@@ -21,7 +21,7 @@ docker-build:
 	@docker build -t ghcr.io/layr-labs/eigenda-proxy:dev .
 
 run-memstore-server:
-	./bin/eigenda-proxy --memstore.enabled
+	./bin/eigenda-proxy --memstore.enabled --eigenda.cert-verification-disabled --eigenda.eth-rpc http://localhost:8545 --eigenda.svc-manager-addr 0x123 --metrics.enabled
 
 disperse-test-blob:
 	curl -X POST -d my-blob-content http://127.0.0.1:3100/put/
@@ -33,10 +33,10 @@ test:
 	go test ./... -parallel 4 
 
 e2e-test:
-	INTEGRATION=true go test -timeout 1m ./e2e -parallel 4 -deploy-config ../.devnet/devnetL1.json
+	INTEGRATION=true go test -timeout 1m ./e2e -parallel 4
 
 holesky-test:
-	TESTNET=true go test -timeout 50m ./e2e  -parallel 4 -deploy-config ../.devnet/devnetL1.json
+	TESTNET=true go test -timeout 50m ./e2e  -parallel 4
 
 .PHONY: lint
 lint:
@@ -67,7 +67,7 @@ op-devnet-allocs:
 	@./scripts/op-devnet-allocs.sh
 
 benchmark:
-	go test -benchmem -run=^$ -bench . ./e2e -test.parallel 4 -deploy-config ../.devnet/devnetL1.json
+	go test -benchmem -run=^$ -bench . ./e2e -test.parallel 4
 
 .PHONY: \
 	clean \

@@ -8,12 +8,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Layr-Labs/eigenda-proxy/common"
 	"github.com/Layr-Labs/eigenda-proxy/metrics"
 	"github.com/Layr-Labs/eigenda-proxy/server"
+	"github.com/Layr-Labs/eigenda-proxy/store"
 	"github.com/Layr-Labs/eigenda-proxy/store/generated_key/memstore"
 	"github.com/Layr-Labs/eigenda-proxy/store/precomputed_key/redis"
 	"github.com/Layr-Labs/eigenda-proxy/store/precomputed_key/s3"
-	"github.com/Layr-Labs/eigenda-proxy/utils"
+	weavevm "github.com/Layr-Labs/eigenda-proxy/store/precomputed_key/weave_vm/types"
+
 	"github.com/Layr-Labs/eigenda-proxy/verify"
 	"github.com/Layr-Labs/eigenda/api/clients"
 	"github.com/Layr-Labs/eigenda/encoding/kzg"
@@ -112,6 +115,7 @@ type Cfg struct {
 	UseS3Caching       bool
 	UseRedisCaching    bool
 	UseS3Fallback      bool
+	UseWeaveVMFallback bool
 }
 
 func TestConfig(useMemory bool) *Cfg {
@@ -122,17 +126,17 @@ func TestConfig(useMemory bool) *Cfg {
 		UseS3Caching:       false,
 		UseRedisCaching:    false,
 		UseS3Fallback:      false,
+		UseWeaveVMFallback: false,
 		WriteThreadCount:   0,
 	}
 }
 
 func createRedisConfig(eigendaCfg server.Config) server.CLIConfig {
-	eigendaCfg.RedisConfig = redis.Config{
+	eigendaCfg.StorageConfig.RedisConfig = redis.Config{
 		Endpoint: redisEndpoint,
 		Password: "",
 		DB:       0,
 		Eviction: 10 * time.Minute,
-		Profile:  true,
 	}
 	return server.CLIConfig{
 		EigenDAConfig: eigendaCfg,
@@ -144,7 +148,7 @@ func createS3Config(eigendaCfg server.Config) server.CLIConfig {
 	bucketName := "eigenda-proxy-test-" + RandStr(10)
 	createS3Bucket(bucketName)
 
-	eigendaCfg.S3Config = s3.Config{
+	eigendaCfg.StorageConfig.S3Config = s3.Config{
 		Bucket:          bucketName,
 		Path:            "",
 		Endpoint:        minioEndpoint,
@@ -152,6 +156,21 @@ func createS3Config(eigendaCfg server.Config) server.CLIConfig {
 		AccessKeySecret: "minioadmin",
 		AccessKeyID:     "minioadmin",
 		CredentialType:  s3.CredentialTypeStatic,
+	}
+	return server.CLIConfig{
+		EigenDAConfig: eigendaCfg,
+	}
+}
+
+func createWeaveVMConfig(eigendaCfg server.Config) server.CLIConfig {
+	pkHex := os.Getenv("EIGENDA_PROXY_WEAVE_VM_PRIV_KEY_HEX")
+	eigendaCfg.StorageConfig.WeaveVMConfig = weavevm.Config{
+		Enabled:  true,
+		Endpoint: "https://testnet-rpc.wvm.dev/",
+		ChainID:  9496,
+		// set higher than 5s in e2e tests
+		Timeout:       10 * time.Second,
+		PrivateKeyHex: pkHex,
 	}
 	return server.CLIConfig{
 		EigenDAConfig: eigendaCfg,
@@ -178,11 +197,12 @@ func TestSuiteConfig(testCfg *Cfg) server.CLIConfig {
 		pollInterval = time.Minute * 1
 	}
 
-	maxBlobLengthBytes, err := utils.ParseBytesAmount("16mib")
+	maxBlobLengthBytes, err := common.ParseBytesAmount("16mib")
 	if err != nil {
 		panic(err)
 	}
 
+	svcManagerAddr := "0xD4A7E1Bd8015057293f0D0A557088c286942e84b" // holesky testnet
 	eigendaCfg := server.Config{
 		EdaClientConfig: clients.EigenDAClientConfig{
 			RPC:                      holeskyDA,
@@ -190,11 +210,13 @@ func TestSuiteConfig(testCfg *Cfg) server.CLIConfig {
 			StatusQueryRetryInterval: pollInterval,
 			DisableTLS:               false,
 			SignerPrivateKeyHex:      pk,
+			EthRpcUrl:                ethRPC,
+			SvcManagerAddr:           svcManagerAddr,
 		},
 		VerifierConfig: verify.Config{
 			VerifyCerts:          false,
 			RPCURL:               ethRPC,
-			SvcManagerAddr:       "0xD4A7E1Bd8015057293f0D0A557088c286942e84b", // incompatible with non holeskly networks
+			SvcManagerAddr:       svcManagerAddr,
 			EthConfirmationDepth: 0,
 			KzgConfig: &kzg.KzgConfig{
 				G1Path:          "../resources/g1.point",
@@ -210,7 +232,10 @@ func TestSuiteConfig(testCfg *Cfg) server.CLIConfig {
 			BlobExpiration:   testCfg.Expiration,
 			MaxBlobSizeBytes: maxBlobLengthBytes,
 		},
-		AsyncPutWorkers: testCfg.WriteThreadCount,
+
+		StorageConfig: store.Config{
+			AsyncPutWorkers: testCfg.WriteThreadCount,
+		},
 	}
 
 	if testCfg.UseMemory {
@@ -223,15 +248,19 @@ func TestSuiteConfig(testCfg *Cfg) server.CLIConfig {
 		cfg = createS3Config(eigendaCfg)
 
 	case testCfg.UseS3Caching:
-		eigendaCfg.CacheTargets = []string{"S3"}
+		eigendaCfg.StorageConfig.CacheTargets = []string{"S3"}
 		cfg = createS3Config(eigendaCfg)
 
 	case testCfg.UseS3Fallback:
-		eigendaCfg.FallbackTargets = []string{"S3"}
+		eigendaCfg.StorageConfig.FallbackTargets = []string{"S3"}
 		cfg = createS3Config(eigendaCfg)
 
+	case testCfg.UseWeaveVMFallback:
+		eigendaCfg.StorageConfig.FallbackTargets = []string{"weavevm"}
+		cfg = createWeaveVMConfig(eigendaCfg)
+
 	case testCfg.UseRedisCaching:
-		eigendaCfg.CacheTargets = []string{"redis"}
+		eigendaCfg.StorageConfig.CacheTargets = []string{"redis"}
 		cfg = createRedisConfig(eigendaCfg)
 
 	default:
@@ -266,7 +295,6 @@ func CreateTestSuite(testSuiteCfg server.CLIConfig) (TestSuite, func()) {
 		log,
 		m,
 	)
-
 	if err != nil {
 		panic(err)
 	}
@@ -333,7 +361,7 @@ func createS3Bucket(bucketName string) {
 }
 
 func RandStr(n int) string {
-	var letterRunes = []rune("abcdefghijklmnopqrstuvwxyz")
+	letterRunes := []rune("abcdefghijklmnopqrstuvwxyz")
 	b := make([]rune, n)
 	for i := range b {
 		b[i] = letterRunes[rand.Intn(len(letterRunes))]

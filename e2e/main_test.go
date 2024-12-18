@@ -7,6 +7,7 @@ import (
 
 	"github.com/Layr-Labs/eigenda-proxy/client"
 	"github.com/Layr-Labs/eigenda-proxy/commitments"
+	"github.com/Layr-Labs/eigenda-proxy/common"
 	"github.com/Layr-Labs/eigenda-proxy/e2e"
 	"github.com/Layr-Labs/eigenda-proxy/store"
 	altda "github.com/ethereum-optimism/optimism/op-alt-da"
@@ -23,6 +24,7 @@ import (
 var (
 	runTestnetIntegrationTests bool // holesky tests
 	runIntegrationTests        bool // memstore tests
+	runWeaveVMTests            bool
 )
 
 // ParseEnv ... reads testing cfg fields. Go test flags don't work for this library due to the dependency on Optimism's E2E framework
@@ -30,6 +32,10 @@ var (
 func ParseEnv() {
 	runIntegrationTests = os.Getenv("INTEGRATION") == "true" || os.Getenv("INTEGRATION") == "1"
 	runTestnetIntegrationTests = os.Getenv("TESTNET") == "true" || os.Getenv("TESTNET") == "1"
+	if runIntegrationTests && runTestnetIntegrationTests {
+		panic("only one of INTEGRATION=true or TESTNET=true env var can be set")
+	}
+	runWeaveVMTests = os.Getenv("EIGENDA_PROXY_WEAVE_VM_PRIV_KEY_HEX") != ""
 }
 
 // TestMain ... run main controller
@@ -51,7 +57,7 @@ func requireDispersalRetrievalEigenDA(t *testing.T, cm *metrics.CountMap, mode c
 }
 
 // requireWriteReadSecondary ... ensure that secondary backend was successfully written/read to/from
-func requireWriteReadSecondary(t *testing.T, cm *metrics.CountMap, bt store.BackendType) {
+func requireWriteReadSecondary(t *testing.T, cm *metrics.CountMap, bt common.BackendType) {
 	writeCount, err := cm.Get(http.MethodPut, store.Success, bt.String())
 	require.NoError(t, err)
 	require.True(t, writeCount > 0)
@@ -61,8 +67,8 @@ func requireWriteReadSecondary(t *testing.T, cm *metrics.CountMap, bt store.Back
 	require.True(t, readCount > 0)
 }
 
-// requireSimpleClientSetGet ... ensures that simple proxy client can disperse and read a blob
-func requireSimpleClientSetGet(t *testing.T, ts e2e.TestSuite, blob []byte) {
+// requireStandardClientSetGet ... ensures that std proxy client can disperse and read a blob
+func requireStandardClientSetGet(t *testing.T, ts e2e.TestSuite, blob []byte) {
 	cfg := &client.Config{
 		URL: ts.Address(),
 	}
@@ -76,7 +82,6 @@ func requireSimpleClientSetGet(t *testing.T, ts e2e.TestSuite, blob []byte) {
 	preimage, err := daClient.GetData(ts.Ctx, blobInfo)
 	require.NoError(t, err)
 	require.Equal(t, blob, preimage)
-
 }
 
 // requireOPClientSetGet ... ensures that alt-da client can disperse and read a blob
@@ -89,5 +94,4 @@ func requireOPClientSetGet(t *testing.T, ts e2e.TestSuite, blob []byte, precompu
 	preimage, err := daClient.GetInput(ts.Ctx, commit)
 	require.NoError(t, err)
 	require.Equal(t, blob, preimage)
-
 }

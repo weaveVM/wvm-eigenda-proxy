@@ -9,7 +9,6 @@ import (
 	"net/http"
 
 	"github.com/Layr-Labs/eigenda-proxy/commitments"
-	"github.com/Layr-Labs/eigenda-proxy/store"
 	"github.com/gorilla/mux"
 )
 
@@ -22,14 +21,14 @@ func (svr *Server) handleHealth(w http.ResponseWriter, _ *http.Request) error {
 // GET ROUTES
 // =================================================================================================
 
-// handleGetSimpleCommitment handles the GET request for simple commitments.
-func (svr *Server) handleGetSimpleCommitment(w http.ResponseWriter, r *http.Request) error {
+// handleGetStdCommitment handles the GET request for std commitments.
+func (svr *Server) handleGetStdCommitment(w http.ResponseWriter, r *http.Request) error {
 	versionByte, err := parseVersionByte(w, r)
 	if err != nil {
 		return fmt.Errorf("error parsing version byte: %w", err)
 	}
 	commitmentMeta := commitments.CommitmentMeta{
-		Mode:        commitments.SimpleCommitmentMode,
+		Mode:        commitments.Standard,
 		CertVersion: versionByte,
 	}
 
@@ -95,11 +94,12 @@ func (svr *Server) handleGetOPGenericCommitment(w http.ResponseWriter, r *http.R
 }
 
 func (svr *Server) handleGetShared(ctx context.Context, w http.ResponseWriter, comm []byte, meta commitments.CommitmentMeta) error {
-	svr.log.Info("Processing GET request", "commitment", hex.EncodeToString(comm), "commitmentMeta", meta)
+	commitmentHex := hex.EncodeToString(comm)
+	svr.log.Info("Processing GET request", "commitment", commitmentHex, "commitmentMeta", meta)
 	input, err := svr.sm.Get(ctx, comm, meta.Mode)
 	if err != nil {
 		err = MetaError{
-			Err:  fmt.Errorf("get request failed with commitment %v: %w", comm, err),
+			Err:  fmt.Errorf("get request failed with commitment %v: %w", commitmentHex, err),
 			Meta: meta,
 		}
 		if errors.Is(err, ErrNotFound) {
@@ -118,10 +118,10 @@ func (svr *Server) handleGetShared(ctx context.Context, w http.ResponseWriter, c
 // POST ROUTES
 // =================================================================================================
 
-// handlePostSimpleCommitment handles the POST request for simple commitments.
-func (svr *Server) handlePostSimpleCommitment(w http.ResponseWriter, r *http.Request) error {
+// handlePostStdCommitment handles the POST request for std commitments.
+func (svr *Server) handlePostStdCommitment(w http.ResponseWriter, r *http.Request) error {
 	commitmentMeta := commitments.CommitmentMeta{
-		Mode:        commitments.SimpleCommitmentMode,
+		Mode:        commitments.Standard,
 		CertVersion: byte(commitments.CertV0), // TODO: hardcoded for now
 	}
 	return svr.handlePostShared(w, r, nil, commitmentMeta)
@@ -180,11 +180,15 @@ func (svr *Server) handlePostShared(w http.ResponseWriter, r *http.Request, comm
 			Err:  fmt.Errorf("put request failed with commitment %v (commitment mode %v): %w", comm, meta.Mode, err),
 			Meta: meta,
 		}
-		if errors.Is(err, store.ErrEigenDAOversizedBlob) || errors.Is(err, store.ErrProxyOversizedBlob) {
-			// we add here any error that should be returned as a 400 instead of a 500.
-			// currently only includes oversized blob requests
+		switch {
+		case is400(err):
 			http.Error(w, err.Error(), http.StatusBadRequest)
-		} else {
+		case is429(err):
+			http.Error(w, err.Error(), http.StatusTooManyRequests)
+		case is503(err):
+			// this tells the caller (batcher) to failover to ethda b/c eigenda is temporarily down
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		default:
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 		return err

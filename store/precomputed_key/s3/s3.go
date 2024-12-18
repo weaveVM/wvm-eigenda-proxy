@@ -4,13 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"path"
 	"strings"
 
-	"github.com/Layr-Labs/eigenda-proxy/store"
+	"github.com/Layr-Labs/eigenda-proxy/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/minio/minio-go/v7"
 
@@ -34,17 +35,32 @@ func StringToCredentialType(s string) CredentialType {
 	}
 }
 
-var _ store.PrecomputedKeyStore = (*Store)(nil)
+var _ common.PrecomputedKeyStore = (*Store)(nil)
 
-type CredentialType string
-type Config struct {
-	CredentialType  CredentialType
-	Endpoint        string
-	EnableTLS       bool
-	AccessKeyID     string
-	AccessKeySecret string
-	Bucket          string
-	Path            string
+type (
+	CredentialType string
+	Config         struct {
+		CredentialType  CredentialType
+		Endpoint        string
+		EnableTLS       bool
+		AccessKeyID     string
+		AccessKeySecret string
+		Bucket          string
+		Path            string
+	}
+)
+
+// Custom MarshalJSON function to control what gets included in the JSON output
+// TODO: Probably best would be to separate config from secrets everywhere.
+// Then we could just log the config and not worry about secrets.
+func (c Config) MarshalJSON() ([]byte, error) {
+	type Alias Config // Use an alias to avoid recursion with MarshalJSON
+	aux := (Alias)(c)
+	// Conditionally include a masked password if it is set
+	if aux.AccessKeySecret != "" {
+		aux.AccessKeySecret = "*****"
+	}
+	return json.Marshal(aux)
 }
 
 // Store ... S3 store
@@ -59,7 +75,7 @@ func isGoogleEndpoint(endpoint string) bool {
 	return strings.Contains(endpoint, "storage.googleapis.com")
 }
 
-func NewS3(cfg Config) (*Store, error) {
+func NewStore(cfg Config) (*Store, error) {
 	putObjectOptions := minio.PutObjectOptions{}
 	if isGoogleEndpoint(cfg.Endpoint) {
 		putObjectOptions.DisableContentSha256 = true // Avoid chunk signatures on GCS: https://github.com/minio/minio-go/issues/1922
@@ -116,8 +132,8 @@ func (s *Store) Verify(_ context.Context, key []byte, value []byte) error {
 	return nil
 }
 
-func (s *Store) BackendType() store.BackendType {
-	return store.S3BackendType
+func (s *Store) BackendType() common.BackendType {
+	return common.S3BackendType
 }
 
 func creds(cfg Config) *credentials.Credentials {
